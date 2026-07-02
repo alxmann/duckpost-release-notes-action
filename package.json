@@ -1,0 +1,38 @@
+{
+  "name": "duckpost-release-notes-action",
+  "version": "0.1.0",
+  "private": true,
+  "description": "GitHub Action that asks DuckPost to generate release notes for a release branch.",
+  "type": "module",
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsc --noEmit",
+    "bundle": "ncc build src/index.ts --target es2022 --minify --source-map --out dist",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "ci": "npm run build && npm run test && npm run bundle"
+  },
+  "keywords": [
+    "duckpost",
+    "github-action",
+    "release-notes"
+  ],
+  "author": "DuckPost",
+  "license": "MIT",
+  "dependencies": {
+    "@actions/core": "^1.11.1",
+    "@actions/github": "^9.1.1"
+  },
+  "overrides": {
+    "@actions/http-client": "^3.0.2"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.10",
+    "@vercel/ncc": "^0.38.3",
+    "typescript": "^5.8.3",
+    "vitest": "^3.2.4"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

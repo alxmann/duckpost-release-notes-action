@@ -1,0 +1,27 @@
+name: "DuckPost Release Notes"
+description: "Requests DuckPost release note generation for a GitHub release branch."
+author: "DuckPost"
+
+inputs:
+  base-branch:
+    description: "Base branch to compare against, for example main."
+    required: true
+  release-branch:
+    description: "Release branch that should receive generated release notes."
+    required: true
+  duckpost-endpoint:
+    description: "DuckPost backend endpoint that accepts release note generation requests."
+    required: false
+    default: "https://duckpost.app/api/ai-release-jobs"
+  include-diff-metadata:
+    description: "Collect local git diff metadata. Requires actions/checkout fetch-depth: 0 for full history."
+    required: false
+    default: "true"
+  timeout-ms:
+    description: "Request timeout in milliseconds."
+    required: false
+    default: "30000"
+
+runs:
+  using: "node20"
+  main: "dist/index.js"
