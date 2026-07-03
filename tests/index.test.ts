@@ -2,10 +2,12 @@ import { describe, expect, it, vi } from "vitest";
 import {
   buildPayload,
   collectDiffMetadata,
+  parseTimeoutMs,
   postToDuckPost,
   readConfig,
   readDuckPostToken,
   run,
+  shouldProcessContext,
   validateDuckPostEndpoint,
   validateProductionBranch,
   type GitHubContext,
@@ -118,7 +120,7 @@ describe("payload", () => {
       compare_url: "https://github.com/duckpost/app/compare/aaa111...abc123",
       diff_summary: "1 file changed, 2 insertions(+)\nChanged files: src/index.ts",
       event_name: "push",
-      idempotency_key: "github:duckpost/app:12345:1:abc123:main",
+      idempotency_key: "github:duckpost/app:push:refs/heads/main:abc123:main",
       release_branch: "main",
       repository_name: "app",
       repository_owner: "duckpost",
@@ -147,9 +149,57 @@ describe("payload", () => {
       { message: "pull_request on refs/pull/42/merge", sha: "abc123" },
     ]);
   });
+
+  it("uses the pull request head SHA in the DuckPost payload", () => {
+    const headSha = "2222222222222222222222222222222222222222";
+    const prContext: GitHubContext = {
+      ...context,
+      eventName: "pull_request",
+      ref: "refs/pull/42/merge",
+      sha: "1111111111111111111111111111111111111111",
+      payload: {
+        pull_request: {
+          number: 42,
+          base: {
+            ref: "main",
+            sha: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          },
+          head: {
+            ref: "feature/release",
+            sha: headSha,
+          },
+        },
+      },
+    };
+
+    const payload = buildPayload(prContext, { productionBranch: "main" }, null);
+    expect(payload.commit_sha).toBe(headSha);
+    expect(payload.compare_url).toBe(
+      `https://github.com/duckpost/app/compare/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa...${headSha}`,
+    );
+    expect(payload.commits).toEqual([
+      { message: "pull_request on refs/pull/42/merge", sha: headSha },
+    ]);
+    expect(payload.idempotency_key).toBe(`github:duckpost/app:pull_request:42:${headSha}:main`);
+  });
 });
 
 describe("idempotency and request", () => {
+  it("keeps the same idempotency key across reruns", () => {
+    const firstPayload = buildPayload(
+      { ...context, runAttempt: 1 },
+      { productionBranch: "main" },
+      null,
+    );
+    const rerunPayload = buildPayload(
+      { ...context, runAttempt: 2 },
+      { productionBranch: "main" },
+      null,
+    );
+
+    expect(rerunPayload.idempotency_key).toBe(firstPayload.idempotency_key);
+  });
+
   it("sends idempotency key in the payload and header", async () => {
     const payload = buildPayload(
       context,
@@ -354,6 +404,116 @@ describe("config", () => {
       includeDiffMetadata: false,
       productionBranch: "main",
       timeoutMs: 15000,
+    });
+  });
+
+  it.each(["15000ms", "1.5", "  ", "999", "300001"])(
+    "rejects non-strict timeout-ms value %s",
+    (timeout) => {
+      expect(() => parseTimeoutMs(timeout)).toThrow("timeout-ms");
+    },
+  );
+});
+
+describe("event gating", () => {
+  it("processes only supported production branch events", () => {
+    expect(shouldProcessContext(context, "main")).toEqual({ process: true });
+    expect(
+      shouldProcessContext(
+        {
+          ...context,
+          eventName: "pull_request",
+          ref: "refs/pull/7/merge",
+          payload: {
+            pull_request: {
+              number: 7,
+              base: { ref: "main" },
+              head: { ref: "feature", sha: context.sha },
+            },
+          },
+        },
+        "main",
+      ),
+    ).toEqual({ process: true });
+    expect(
+      shouldProcessContext(
+        {
+          ...context,
+          eventName: "workflow_dispatch",
+          ref: "refs/heads/main",
+        },
+        "main",
+      ),
+    ).toEqual({ process: true });
+  });
+
+  it("skips wrong branch and unsupported events before posting", async () => {
+    const core = createCore({
+      "production-branch": "main",
+      "duckpost-endpoint": "https://duckpost.app/api/ai-release-jobs",
+      "include-diff-metadata": "true",
+      "timeout-ms": "30000",
+    });
+    const fetchImpl = vi.fn(async () => new Response("{}", { status: 202 }));
+    const gitExec = vi.fn();
+
+    await run(
+      core,
+      { ...context, ref: "refs/heads/dev" },
+      {},
+      fetchImpl,
+      gitExec,
+    );
+
+    expect(core.info).toHaveBeenCalledWith(
+      "Skipping DuckPost release notes because push ref refs/heads/dev does not match refs/heads/main.",
+    );
+    expect(core.setSecret).not.toHaveBeenCalled();
+    expect(core.setFailed).not.toHaveBeenCalled();
+    expect(fetchImpl).not.toHaveBeenCalled();
+    expect(gitExec).not.toHaveBeenCalled();
+
+    const unsupportedCore = createCore({
+      "production-branch": "main",
+      "duckpost-endpoint": "https://duckpost.app/api/ai-release-jobs",
+      "include-diff-metadata": "true",
+      "timeout-ms": "30000",
+    });
+    await run(
+      unsupportedCore,
+      { ...context, eventName: "issues", ref: "refs/heads/main" },
+      {},
+      fetchImpl,
+      gitExec,
+    );
+
+    expect(unsupportedCore.info).toHaveBeenCalledWith(
+      "Skipping DuckPost release notes because issues is not a supported event.",
+    );
+    expect(unsupportedCore.setFailed).not.toHaveBeenCalled();
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it("skips pull requests whose base branch does not match production", () => {
+    expect(
+      shouldProcessContext(
+        {
+          ...context,
+          eventName: "pull_request",
+          ref: "refs/pull/9/merge",
+          payload: {
+            pull_request: {
+              number: 9,
+              base: { ref: "dev" },
+              head: { ref: "feature", sha: context.sha },
+            },
+          },
+        },
+        "main",
+      ),
+    ).toEqual({
+      process: false,
+      reason: "Skipping DuckPost release notes because pull request base dev does not match main.",
     });
   });
 });

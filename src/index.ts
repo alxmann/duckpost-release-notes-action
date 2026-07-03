@@ -102,7 +102,11 @@ export function parseBooleanInput(value: string): boolean {
 }
 
 export function parseTimeoutMs(value: string): number {
-  const timeoutMs = Number.parseInt(value.trim(), 10);
+  const normalized = value.trim();
+  if (!/^\d+$/u.test(normalized)) {
+    throw new ActionError("timeout-ms must be an integer between 1000 and 300000.");
+  }
+  const timeoutMs = Number(normalized);
   if (!Number.isFinite(timeoutMs) || timeoutMs < 1000 || timeoutMs > 300000) {
     throw new ActionError("timeout-ms must be an integer between 1000 and 300000.");
   }
@@ -207,21 +211,21 @@ export function createIdempotencyKey(
   context: GitHubContext,
   productionBranch: string,
 ): string {
-  const runIdentity =
-    context.runId && context.runAttempt
-      ? `${context.runId}:${context.runAttempt}`
-      : `${context.workflow ?? "workflow"}:${context.sha}`;
+  const headSha = payloadHeadSha(context);
+  const eventIdentity =
+    context.eventName === "pull_request" && typeof context.payload?.pull_request?.number === "number"
+      ? `pull_request:${context.payload.pull_request.number}:${headSha}`
+      : `${context.eventName}:${context.ref}:${headSha}`;
 
   return [
     "github",
     `${context.repo.owner}/${context.repo.repo}`,
-    runIdentity,
-    context.sha,
+    eventIdentity,
     productionBranch,
   ].join(":");
 }
 
-function eventName(context: GitHubContext): "pull_request" | "push" | "workflow_dispatch" {
+function eventName(context: GitHubContext): DuckPostPayload["event_name"] {
   if (
     context.eventName === "pull_request" ||
     context.eventName === "push" ||
@@ -229,7 +233,56 @@ function eventName(context: GitHubContext): "pull_request" | "push" | "workflow_
   ) {
     return context.eventName;
   }
-  return "workflow_dispatch";
+  throw new ActionError(`Unsupported GitHub event: ${context.eventName}`);
+}
+
+function payloadHeadSha(context: GitHubContext): string {
+  if (context.eventName === "pull_request") {
+    return usableCommitSha(context.payload?.pull_request?.head?.sha) ?? context.sha;
+  }
+  return context.sha;
+}
+
+export function shouldProcessContext(
+  context: GitHubContext,
+  productionBranch: string,
+): { process: true } | { process: false; reason: string } {
+  if (context.eventName === "pull_request") {
+    const baseRef = context.payload?.pull_request?.base?.ref;
+    if (baseRef !== productionBranch) {
+      return {
+        process: false,
+        reason: `Skipping DuckPost release notes because pull request base ${baseRef ?? "(unknown)"} does not match ${productionBranch}.`,
+      };
+    }
+    return { process: true };
+  }
+
+  const productionRef = `refs/heads/${productionBranch}`;
+  if (context.eventName === "push") {
+    if (context.ref !== productionRef) {
+      return {
+        process: false,
+        reason: `Skipping DuckPost release notes because push ref ${context.ref} does not match ${productionRef}.`,
+      };
+    }
+    return { process: true };
+  }
+
+  if (context.eventName === "workflow_dispatch") {
+    if (context.ref !== productionRef) {
+      return {
+        process: false,
+        reason: `Skipping DuckPost release notes because workflow_dispatch ref ${context.ref} does not match ${productionRef}.`,
+      };
+    }
+    return { process: true };
+  }
+
+  return {
+    process: false,
+    reason: `Skipping DuckPost release notes because ${context.eventName} is not a supported event.`,
+  };
 }
 
 export function buildPayload(
@@ -243,13 +296,14 @@ export function buildPayload(
   );
   const pullRequest = context.payload?.pull_request;
   const normalizedEventName = eventName(context);
+  const headSha = payloadHeadSha(context);
   const beforeSha =
     diff?.available === true
       ? diff.mergeBase
       : pullRequest?.base?.sha ?? null;
   const compareUrl =
     beforeSha && context.serverUrl
-      ? `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/compare/${beforeSha}...${context.sha}`
+      ? `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/compare/${beforeSha}...${headSha}`
       : null;
   const commits =
     diff?.available === true && diff.commits.length > 0
@@ -259,7 +313,7 @@ export function buildPayload(
         }))
       : [{
           message: `${context.eventName} on ${context.ref}`,
-          sha: context.sha,
+          sha: headSha,
         }];
   const diffSummary =
     diff === null
@@ -284,7 +338,7 @@ export function buildPayload(
             status: "modified",
           }))
         : [],
-    commit_sha: context.sha,
+    commit_sha: headSha,
     commits,
     compare_url: compareUrl,
     diff_summary: diffSummary,
@@ -471,6 +525,12 @@ export async function run(
 ): Promise<void> {
   try {
     const config = readConfig(actionCore);
+    const decision = shouldProcessContext(context, config.productionBranch);
+    if (!decision.process) {
+      actionCore.info(decision.reason);
+      return;
+    }
+
     const token = readDuckPostToken(env);
     actionCore.setSecret(token);
 
