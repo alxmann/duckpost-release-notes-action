@@ -32,7 +32,7 @@ jobs:
         with:
           fetch-depth: 0
 
-      - uses: duckpost/duckpost-release-notes-action@v1
+      - uses: alxmann/duckpost-release-notes-action@v1
         env:
           DUCKPOST_TOKEN: ${{ secrets.DUCKPOST_TOKEN }}
         with:
@@ -44,7 +44,7 @@ jobs:
 | Input | Required | Default | Description |
 | --- | --- | --- | --- |
 | `production-branch` | yes | | Production branch that pull requests target, for example `main`. |
-| `duckpost-endpoint` | no | `https://duckpost.app/api/ai-release-jobs` | DuckPost backend endpoint. |
+| `duckpost-endpoint` | no | `https://duckpost.app/api/ai-release-jobs` | DuckPost backend endpoint. Must use a trusted DuckPost HTTPS host. |
 | `include-diff-metadata` | no | `true` | Whether to include local git diff metadata. |
 | `timeout-ms` | no | `30000` | Backend request timeout. |
 
@@ -93,6 +93,7 @@ npm run bundle
 ## Security Notes
 
 - Branch inputs reject unsafe ref expressions, whitespace, path traversal-like branch values, and glob metacharacters.
+- Custom endpoints must use HTTPS and a trusted DuckPost host.
 - The action sends the DuckPost token only in the `Authorization` header.
 - The idempotency key is sent in both the JSON body and the `Idempotency-Key` header.
 - Network and HTTP errors fail the action.

@@ -7,7 +7,7 @@ inputs:
     description: "Production branch that pull requests target, for example main."
     required: true
   duckpost-endpoint:
-    description: "DuckPost backend endpoint that accepts release note generation requests."
+    description: "DuckPost backend endpoint that accepts release note generation requests. Must use a trusted DuckPost HTTPS host."
     required: false
     default: "https://duckpost.app/api/ai-release-jobs"
   include-diff-metadata:

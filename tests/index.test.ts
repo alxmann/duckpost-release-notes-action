@@ -6,6 +6,7 @@ import {
   readConfig,
   readDuckPostToken,
   run,
+  validateDuckPostEndpoint,
   validateProductionBranch,
   type GitHubContext,
 } from "../src/index.js";
@@ -45,7 +46,7 @@ describe("auth", () => {
   it("masks the token before network calls and never logs it", async () => {
     const core = createCore({
       "production-branch": "main",
-      "duckpost-endpoint": "https://duckpost.test/api/ai-release-jobs",
+      "duckpost-endpoint": "https://duckpost.app/api/ai-release-jobs",
       "include-diff-metadata": "false",
       "timeout-ms": "30000",
     });
@@ -158,14 +159,14 @@ describe("idempotency and request", () => {
     const fetchImpl = vi.fn(async () => new Response("{}", { status: 202 }));
 
     await postToDuckPost(
-      { duckpostEndpoint: "https://duckpost.test/api/ai-release-jobs", timeoutMs: 30000 },
+      { duckpostEndpoint: "https://duckpost.app/api/ai-release-jobs", timeoutMs: 30000 },
       "token-123",
       payload,
       fetchImpl,
     );
 
     expect(fetchImpl).toHaveBeenCalledWith(
-      "https://duckpost.test/api/ai-release-jobs",
+      "https://duckpost.app/api/ai-release-jobs",
       expect.objectContaining({
         body: expect.stringContaining(payload.idempotency_key),
         headers: expect.objectContaining({
@@ -189,7 +190,7 @@ describe("idempotency and request", () => {
 
     await expect(
       postToDuckPost(
-        { duckpostEndpoint: "https://duckpost.test/api/ai-release-jobs", timeoutMs: 30000 },
+        { duckpostEndpoint: "https://duckpost.app/api/ai-release-jobs", timeoutMs: 30000 },
         "secret-token",
         payload,
         fetchImpl,
@@ -206,12 +207,29 @@ describe("idempotency and request", () => {
 
     await expect(
       postToDuckPost(
-        { duckpostEndpoint: "https://duckpost.test/api/ai-release-jobs", timeoutMs: 30000 },
+        { duckpostEndpoint: "https://duckpost.app/api/ai-release-jobs", timeoutMs: 30000 },
         "secret-token",
         payload,
         vi.fn(async () => new Response("invalid request", { status: 400 })),
       ),
     ).rejects.toThrow("HTTP 400");
+  });
+});
+
+describe("endpoint validation", () => {
+  it("accepts the trusted DuckPost HTTPS endpoint", () => {
+    expect(validateDuckPostEndpoint("")).toBe("https://duckpost.app/api/ai-release-jobs");
+    expect(validateDuckPostEndpoint("https://duckpost.app/api/ai-release-jobs")).toBe(
+      "https://duckpost.app/api/ai-release-jobs",
+    );
+  });
+
+  it.each([
+    ["http://duckpost.app/api/ai-release-jobs"],
+    ["https://evil.example/api/ai-release-jobs"],
+    ["not a url"],
+  ])("rejects unsafe endpoint %s", (endpoint) => {
+    expect(() => validateDuckPostEndpoint(endpoint)).toThrow("duckpost-endpoint");
   });
 });
 
@@ -237,9 +255,9 @@ describe("diff metadata", () => {
       switch (command) {
         case "rev-parse --is-shallow-repository":
           return { stdout: "false\n", stderr: "" };
-        case "rev-parse --verify abc123":
+        case "rev-parse --verify --end-of-options abc123^{commit}":
           return { stdout: "abc123\n", stderr: "" };
-        case "rev-parse --verify origin/main":
+        case "rev-parse --verify --end-of-options refs/remotes/origin/main^{commit}":
           return { stdout: "aaa111\n", stderr: "" };
         case "merge-base aaa111 abc123":
           return { stdout: "base000\n", stderr: "" };
@@ -275,13 +293,13 @@ describe("config", () => {
       readConfig(
         createCore({
           "production-branch": "refs/heads/main",
-          "duckpost-endpoint": "https://duckpost.test/api/ai-release-jobs",
+          "duckpost-endpoint": "https://duckpost.app/api/ai-release-jobs",
           "include-diff-metadata": "false",
           "timeout-ms": "15000",
         }),
       ),
     ).toEqual({
-      duckpostEndpoint: "https://duckpost.test/api/ai-release-jobs",
+      duckpostEndpoint: "https://duckpost.app/api/ai-release-jobs",
       includeDiffMetadata: false,
       productionBranch: "main",
       timeoutMs: 15000,

@@ -47,6 +47,9 @@ export type ActionConfig = {
   timeoutMs: number;
 };
 
+const DEFAULT_DUCKPOST_ENDPOINT = "https://duckpost.app/api/ai-release-jobs";
+const TRUSTED_DUCKPOST_HOSTS = new Set(["duckpost.app"]);
+
 export type DiffMetadata =
   | {
       available: true;
@@ -157,13 +160,34 @@ export function validateProductionBranch(productionBranchInput: string) {
   return normalizeBranchInput(productionBranchInput, "production-branch");
 }
 
+export function validateDuckPostEndpoint(input: string): string {
+  const endpoint = input.trim() || DEFAULT_DUCKPOST_ENDPOINT;
+  let parsed: URL;
+
+  try {
+    parsed = new URL(endpoint);
+  } catch {
+    throw new ActionError("duckpost-endpoint must be a valid HTTPS URL.");
+  }
+
+  if (parsed.protocol !== "https:") {
+    throw new ActionError("duckpost-endpoint must use HTTPS.");
+  }
+
+  if (!TRUSTED_DUCKPOST_HOSTS.has(parsed.hostname.toLowerCase())) {
+    throw new ActionError("duckpost-endpoint must use a trusted DuckPost host.");
+  }
+
+  return parsed.toString();
+}
+
 export function readConfig(actionCore: Pick<CoreLike, "getInput">): ActionConfig {
   const productionBranch = validateProductionBranch(
     actionCore.getInput("production-branch", { required: true }),
   );
 
   return {
-    duckpostEndpoint: actionCore.getInput("duckpost-endpoint") || "https://duckpost.app/api/ai-release-jobs",
+    duckpostEndpoint: validateDuckPostEndpoint(actionCore.getInput("duckpost-endpoint")),
     includeDiffMetadata: parseBooleanInput(actionCore.getInput("include-diff-metadata") || "true"),
     productionBranch,
     timeoutMs: parseTimeoutMs(actionCore.getInput("timeout-ms") || "30000"),
@@ -312,13 +336,26 @@ export async function collectDiffMetadata(
       };
     }
 
-    const headSha = await git(gitExec, ["rev-parse", "--verify", context.sha || "HEAD"]);
-    const candidateBaseRefs = [`origin/${productionBranch}`, productionBranch];
+    const headSha = await git(gitExec, [
+      "rev-parse",
+      "--verify",
+      "--end-of-options",
+      `${context.sha || "HEAD"}^{commit}`,
+    ]);
+    const candidateBaseRefs = [
+      `refs/remotes/origin/${productionBranch}^{commit}`,
+      `refs/heads/${productionBranch}^{commit}`,
+    ];
     let baseRef: string | null = null;
 
     for (const candidate of candidateBaseRefs) {
       try {
-        baseRef = await git(gitExec, ["rev-parse", "--verify", candidate]);
+        baseRef = await git(gitExec, [
+          "rev-parse",
+          "--verify",
+          "--end-of-options",
+          candidate,
+        ]);
         break;
       } catch {
         continue;
