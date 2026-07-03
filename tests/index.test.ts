@@ -285,6 +285,57 @@ describe("diff metadata", () => {
       shortStat: "2 files changed, 10 insertions(+)",
     });
   });
+
+  it("uses the push before SHA as the production branch base", async () => {
+    const pushContext: GitHubContext = {
+      ...context,
+      payload: {
+        before: "1111111111111111111111111111111111111111",
+      },
+      sha: "2222222222222222222222222222222222222222",
+    };
+    const gitExec = vi.fn(async (_file: string, args: readonly string[]) => {
+      const command = args.join(" ");
+      switch (command) {
+        case "rev-parse --is-shallow-repository":
+          return { stdout: "false\n", stderr: "" };
+        case "rev-parse --verify --end-of-options 2222222222222222222222222222222222222222^{commit}":
+          return { stdout: "2222222222222222222222222222222222222222\n", stderr: "" };
+        case "rev-parse --verify --end-of-options 1111111111111111111111111111111111111111^{commit}":
+          return { stdout: "1111111111111111111111111111111111111111\n", stderr: "" };
+        case "diff --name-only 1111111111111111111111111111111111111111..2222222222222222222222222222222222222222":
+          return { stdout: "apps/api/src/routes/ai-integrations.ts\n", stderr: "" };
+        case "log --format=%H%x09%s 1111111111111111111111111111111111111111..2222222222222222222222222222222222222222":
+          return {
+            stdout: "2222222222222222222222222222222222222222\tFix release workflow\n",
+            stderr: "",
+          };
+        case "diff --shortstat 1111111111111111111111111111111111111111..2222222222222222222222222222222222222222":
+          return { stdout: " 1 file changed, 1 insertion(+)\n", stderr: "" };
+        default:
+          throw new Error(`Unexpected git args: ${command}`);
+      }
+    });
+
+    await expect(collectDiffMetadata("main", pushContext, gitExec)).resolves.toEqual({
+      available: true,
+      baseRef: "1111111111111111111111111111111111111111",
+      commits: [
+        {
+          sha: "2222222222222222222222222222222222222222",
+          subject: "Fix release workflow",
+        },
+      ],
+      filesChanged: ["apps/api/src/routes/ai-integrations.ts"],
+      headSha: "2222222222222222222222222222222222222222",
+      mergeBase: "1111111111111111111111111111111111111111",
+      shortStat: "1 file changed, 1 insertion(+)",
+    });
+    expect(gitExec).not.toHaveBeenCalledWith(
+      "git",
+      expect.arrayContaining(["refs/remotes/origin/main^{commit}"]),
+    );
+  });
 });
 
 describe("config", () => {

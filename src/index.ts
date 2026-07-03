@@ -11,6 +11,7 @@ export type GitHubContext = {
   eventName: string;
   graphqlUrl?: string;
   payload?: {
+    before?: string;
     pull_request?: {
       number?: number;
       head?: { ref?: string; sha?: string };
@@ -321,6 +322,19 @@ function parseGitLog(stdout: string): Array<{ sha: string; subject: string }> {
   return commits;
 }
 
+function usableCommitSha(value: string | undefined): string | null {
+  const sha = value?.trim();
+  if (!sha) return null;
+  if (!/^[a-f0-9]{40}$/iu.test(sha)) return null;
+  if (/^0{40}$/u.test(sha)) return null;
+  return sha;
+}
+
+function pushBeforeSha(context: GitHubContext): string | null {
+  if (context.eventName !== "push") return null;
+  return usableCommitSha(context.payload?.before);
+}
+
 export async function collectDiffMetadata(
   productionBranch: string,
   context: GitHubContext,
@@ -342,23 +356,42 @@ export async function collectDiffMetadata(
       "--end-of-options",
       `${context.sha || "HEAD"}^{commit}`,
     ]);
-    const candidateBaseRefs = [
-      `refs/remotes/origin/${productionBranch}^{commit}`,
-      `refs/heads/${productionBranch}^{commit}`,
-    ];
+    const beforeSha = pushBeforeSha(context);
     let baseRef: string | null = null;
+    let mergeBase: string | null = null;
 
-    for (const candidate of candidateBaseRefs) {
+    if (beforeSha) {
       try {
         baseRef = await git(gitExec, [
           "rev-parse",
           "--verify",
           "--end-of-options",
-          candidate,
+          `${beforeSha}^{commit}`,
         ]);
-        break;
+        mergeBase = baseRef;
       } catch {
-        continue;
+        baseRef = null;
+      }
+    }
+
+    if (!baseRef) {
+      const candidateBaseRefs = [
+        `refs/remotes/origin/${productionBranch}^{commit}`,
+        `refs/heads/${productionBranch}^{commit}`,
+      ];
+
+      for (const candidate of candidateBaseRefs) {
+        try {
+          baseRef = await git(gitExec, [
+            "rev-parse",
+            "--verify",
+            "--end-of-options",
+            candidate,
+          ]);
+          break;
+        } catch {
+          continue;
+        }
       }
     }
 
@@ -369,7 +402,7 @@ export async function collectDiffMetadata(
       };
     }
 
-    const mergeBase = await git(gitExec, ["merge-base", baseRef, headSha]);
+    mergeBase ??= await git(gitExec, ["merge-base", baseRef, headSha]);
     const range = `${mergeBase}..${headSha}`;
     const filesChangedOutput = await git(gitExec, ["diff", "--name-only", range]);
     const commitsOutput = await git(gitExec, ["log", "--format=%H%x09%s", range]);
