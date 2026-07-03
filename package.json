@@ -2,7 +2,7 @@
   "name": "duckpost-release-notes-action",
   "version": "0.1.0",
   "private": true,
-  "description": "GitHub Action that asks DuckPost to generate release notes for a release branch.",
+  "description": "GitHub Action that asks DuckPost to generate release notes for a production branch.",
   "type": "module",
   "main": "dist/index.js",
   "scripts": {

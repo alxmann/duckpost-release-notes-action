@@ -41,10 +41,9 @@ type GitExec = (
 ) => Promise<{ stdout: string; stderr: string }>;
 
 export type ActionConfig = {
-  baseBranch: string;
   duckpostEndpoint: string;
   includeDiffMetadata: boolean;
-  releaseBranch: string;
+  productionBranch: string;
   timeoutMs: number;
 };
 
@@ -76,7 +75,9 @@ export type DuckPostPayload = {
   commits: Array<{ message: string; sha: string }>;
   compare_url?: string | null;
   diff_summary: string;
+  event_name: "pull_request" | "push" | "workflow_dispatch";
   idempotency_key: string;
+  pull_request_number?: number;
   release_branch: string;
   repository_name: string;
   repository_owner: string;
@@ -152,28 +153,19 @@ export function normalizeBranchInput(input: string, label: string): string {
   return branch;
 }
 
-export function validateBranches(baseBranchInput: string, releaseBranchInput: string) {
-  const baseBranch = normalizeBranchInput(baseBranchInput, "base-branch");
-  const releaseBranch = normalizeBranchInput(releaseBranchInput, "release-branch");
-
-  if (baseBranch === releaseBranch) {
-    throw new ActionError("base-branch and release-branch must be different.");
-  }
-
-  return { baseBranch, releaseBranch };
+export function validateProductionBranch(productionBranchInput: string) {
+  return normalizeBranchInput(productionBranchInput, "production-branch");
 }
 
 export function readConfig(actionCore: Pick<CoreLike, "getInput">): ActionConfig {
-  const { baseBranch, releaseBranch } = validateBranches(
-    actionCore.getInput("base-branch", { required: true }),
-    actionCore.getInput("release-branch", { required: true }),
+  const productionBranch = validateProductionBranch(
+    actionCore.getInput("production-branch", { required: true }),
   );
 
   return {
-    baseBranch,
     duckpostEndpoint: actionCore.getInput("duckpost-endpoint") || "https://duckpost.app/api/ai-release-jobs",
     includeDiffMetadata: parseBooleanInput(actionCore.getInput("include-diff-metadata") || "true"),
-    releaseBranch,
+    productionBranch,
     timeoutMs: parseTimeoutMs(actionCore.getInput("timeout-ms") || "30000"),
   };
 }
@@ -188,8 +180,7 @@ export function readDuckPostToken(env: NodeJS.ProcessEnv): string {
 
 export function createIdempotencyKey(
   context: GitHubContext,
-  baseBranch: string,
-  releaseBranch: string,
+  productionBranch: string,
 ): string {
   const runIdentity =
     context.runId && context.runAttempt
@@ -201,22 +192,32 @@ export function createIdempotencyKey(
     `${context.repo.owner}/${context.repo.repo}`,
     runIdentity,
     context.sha,
-    baseBranch,
-    releaseBranch,
+    productionBranch,
   ].join(":");
+}
+
+function eventName(context: GitHubContext): "pull_request" | "push" | "workflow_dispatch" {
+  if (
+    context.eventName === "pull_request" ||
+    context.eventName === "push" ||
+    context.eventName === "workflow_dispatch"
+  ) {
+    return context.eventName;
+  }
+  return "workflow_dispatch";
 }
 
 export function buildPayload(
   context: GitHubContext,
-  config: Pick<ActionConfig, "baseBranch" | "releaseBranch">,
+  config: Pick<ActionConfig, "productionBranch">,
   diff: DiffMetadata | null,
 ): DuckPostPayload {
   const idempotencyKey = createIdempotencyKey(
     context,
-    config.baseBranch,
-    config.releaseBranch,
+    config.productionBranch,
   );
   const pullRequest = context.payload?.pull_request;
+  const normalizedEventName = eventName(context);
   const beforeSha =
     diff?.available === true
       ? diff.mergeBase
@@ -262,8 +263,12 @@ export function buildPayload(
     commits,
     compare_url: compareUrl,
     diff_summary: diffSummary,
+    event_name: normalizedEventName,
     idempotency_key: idempotencyKey,
-    release_branch: config.releaseBranch,
+    ...(typeof pullRequest?.number === "number"
+      ? { pull_request_number: pullRequest.number }
+      : {}),
+    release_branch: config.productionBranch,
     repository_name: context.repo.repo,
     repository_owner: context.repo.owner,
   };
@@ -293,7 +298,7 @@ function parseGitLog(stdout: string): Array<{ sha: string; subject: string }> {
 }
 
 export async function collectDiffMetadata(
-  baseBranch: string,
+  productionBranch: string,
   context: GitHubContext,
   gitExec: GitExec = execFile,
 ): Promise<DiffMetadata> {
@@ -308,7 +313,7 @@ export async function collectDiffMetadata(
     }
 
     const headSha = await git(gitExec, ["rev-parse", "--verify", context.sha || "HEAD"]);
-    const candidateBaseRefs = [`origin/${baseBranch}`, baseBranch];
+    const candidateBaseRefs = [`origin/${productionBranch}`, productionBranch];
     let baseRef: string | null = null;
 
     for (const candidate of candidateBaseRefs) {
@@ -323,7 +328,7 @@ export async function collectDiffMetadata(
     if (!baseRef) {
       return {
         available: false,
-        reason: `Could not resolve base branch ${baseBranch}. Ensure checkout includes the base branch with fetch-depth: 0.`,
+        reason: `Could not resolve production branch ${productionBranch}. Ensure checkout includes the production branch with fetch-depth: 0.`,
       };
     }
 
@@ -400,7 +405,7 @@ export async function run(
     actionCore.setSecret(token);
 
     const diff = config.includeDiffMetadata
-      ? await collectDiffMetadata(config.baseBranch, context, gitExec)
+      ? await collectDiffMetadata(config.productionBranch, context, gitExec)
       : null;
 
     if (diff && !diff.available) {
@@ -409,7 +414,7 @@ export async function run(
 
     const payload = buildPayload(context, config, diff);
     actionCore.info(
-      `Requesting DuckPost release notes for ${payload.repository_owner}/${payload.repository_name} ${config.releaseBranch}.`,
+      `Requesting DuckPost release notes for ${payload.repository_owner}/${payload.repository_name} ${config.productionBranch}.`,
     );
     await postToDuckPost(config, token, payload, fetchImpl);
     actionCore.info("DuckPost release note generation request accepted.");

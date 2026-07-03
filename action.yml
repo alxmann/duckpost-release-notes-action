@@ -1,13 +1,10 @@
 name: "DuckPost Release Notes"
-description: "Requests DuckPost release note generation for a GitHub release branch."
+description: "Requests DuckPost release note generation for pull requests and production branch updates."
 author: "DuckPost"
 
 inputs:
-  base-branch:
-    description: "Base branch to compare against, for example main."
-    required: true
-  release-branch:
-    description: "Release branch that should receive generated release notes."
+  production-branch:
+    description: "Production branch that pull requests target, for example main."
     required: true
   duckpost-endpoint:
     description: "DuckPost backend endpoint that accepts release note generation requests."

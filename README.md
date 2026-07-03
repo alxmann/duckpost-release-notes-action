@@ -1,11 +1,11 @@
 # DuckPost Release Notes Action
 
-Standalone GitHub Action that sends GitHub repository context to the DuckPost backend so DuckPost can generate release notes for a release branch.
+Standalone GitHub Action that sends GitHub repository context to the DuckPost backend so DuckPost can generate release notes for pull requests targeting a production branch.
 
 This action is intentionally thin:
 
 - Reads `DUCKPOST_TOKEN` from the environment and masks it with GitHub Actions secret masking.
-- Validates `base-branch` and `release-branch` inputs before making a request.
+- Validates the `production-branch` input before making a request.
 - Collects GitHub Actions context from `@actions/github`.
 - Optionally collects local git diff metadata when the checkout has full history.
 - Sends one authenticated `POST` request to the DuckPost backend with an idempotency key.
@@ -17,11 +17,12 @@ This action is intentionally thin:
 name: DuckPost release notes
 
 on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+    branches: [main]
+  push:
+    branches: [main]
   workflow_dispatch:
-    inputs:
-      release_branch:
-        description: Release branch
-        required: true
 
 jobs:
   release-notes:
@@ -35,16 +36,14 @@ jobs:
         env:
           DUCKPOST_TOKEN: ${{ secrets.DUCKPOST_TOKEN }}
         with:
-          base-branch: main
-          release-branch: ${{ inputs.release_branch }}
+          production-branch: main
 ```
 
 ## Inputs
 
 | Input | Required | Default | Description |
 | --- | --- | --- | --- |
-| `base-branch` | yes | | Base branch to compare against, for example `main`. |
-| `release-branch` | yes | | Release branch that should receive generated release notes. |
+| `production-branch` | yes | | Production branch that pull requests target, for example `main`. |
 | `duckpost-endpoint` | no | `https://duckpost.app/api/ai-release-jobs` | DuckPost backend endpoint. |
 | `include-diff-metadata` | no | `true` | Whether to include local git diff metadata. |
 | `timeout-ms` | no | `30000` | Backend request timeout. |
@@ -61,11 +60,13 @@ The action posts JSON with this shape:
 {
   "repository_owner": "duckpost",
   "repository_name": "app",
-  "release_branch": "release/1.2.3",
+  "release_branch": "main",
+  "event_name": "pull_request",
+  "pull_request_number": 42,
   "commit_sha": "abc123",
   "before_sha": "base000",
   "compare_url": "https://github.com/duckpost/app/compare/base000...abc123",
-  "idempotency_key": "github:duckpost/app:12345:1:abc123:main:release/1.2.3",
+  "idempotency_key": "github:duckpost/app:12345:1:abc123:main",
   "changed_files": [
     { "filename": "src/index.ts", "status": "modified" }
   ],
@@ -91,7 +92,7 @@ npm run bundle
 
 ## Security Notes
 
-- Branch inputs reject unsafe ref expressions, whitespace, path traversal-like branch values, glob metacharacters, and identical base/release branches.
+- Branch inputs reject unsafe ref expressions, whitespace, path traversal-like branch values, and glob metacharacters.
 - The action sends the DuckPost token only in the `Authorization` header.
 - The idempotency key is sent in both the JSON body and the `Idempotency-Key` header.
 - Network and HTTP errors fail the action.

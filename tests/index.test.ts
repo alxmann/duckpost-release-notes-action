@@ -6,7 +6,7 @@ import {
   readConfig,
   readDuckPostToken,
   run,
-  validateBranches,
+  validateProductionBranch,
   type GitHubContext,
 } from "../src/index.js";
 
@@ -16,7 +16,7 @@ const context: GitHubContext = {
   eventName: "push",
   graphqlUrl: "https://api.github.com/graphql",
   payload: {},
-  ref: "refs/heads/release/1.2.3",
+  ref: "refs/heads/main",
   repo: { owner: "duckpost", repo: "app" },
   runAttempt: 1,
   runId: 12345,
@@ -44,8 +44,7 @@ describe("auth", () => {
 
   it("masks the token before network calls and never logs it", async () => {
     const core = createCore({
-      "base-branch": "main",
-      "release-branch": "release/1.2.3",
+      "production-branch": "main",
       "duckpost-endpoint": "https://duckpost.test/api/ai-release-jobs",
       "include-diff-metadata": "false",
       "timeout-ms": "30000",
@@ -74,10 +73,7 @@ describe("auth", () => {
 
 describe("branch validation", () => {
   it("normalizes refs/heads prefixes", () => {
-    expect(validateBranches("refs/heads/main", "refs/heads/release/1.2.3")).toEqual({
-      baseBranch: "main",
-      releaseBranch: "release/1.2.3",
-    });
+    expect(validateProductionBranch("refs/heads/main")).toBe("main");
   });
 
   it.each([
@@ -97,11 +93,7 @@ describe("branch validation", () => {
     ["HEAD"],
     ["-main"],
   ])("rejects unsafe branch value %s", (branch) => {
-    expect(() => validateBranches("main", branch)).toThrow("release-branch");
-  });
-
-  it("rejects identical branches", () => {
-    expect(() => validateBranches("main", "main")).toThrow("must be different");
+    expect(() => validateProductionBranch(branch)).toThrow("production-branch");
   });
 });
 
@@ -117,17 +109,16 @@ describe("payload", () => {
       shortStat: "1 file changed, 2 insertions(+)",
     };
 
-    expect(
-      buildPayload(context, { baseBranch: "main", releaseBranch: "release/1.2.3" }, diff),
-    ).toEqual({
+    expect(buildPayload(context, { productionBranch: "main" }, diff)).toEqual({
       before_sha: "aaa111",
       changed_files: [{ filename: "src/index.ts", status: "modified" }],
       commit_sha: "abc123",
       commits: [{ message: "Ship release notes", sha: "bbb222" }],
       compare_url: "https://github.com/duckpost/app/compare/aaa111...abc123",
       diff_summary: "1 file changed, 2 insertions(+)\nChanged files: src/index.ts",
-      idempotency_key: "github:duckpost/app:12345:1:abc123:main:release/1.2.3",
-      release_branch: "release/1.2.3",
+      event_name: "push",
+      idempotency_key: "github:duckpost/app:12345:1:abc123:main",
+      release_branch: "main",
       repository_name: "app",
       repository_owner: "duckpost",
     });
@@ -136,6 +127,8 @@ describe("payload", () => {
   it("falls back to pull request base SHA when git diff metadata is unavailable", () => {
     const prContext: GitHubContext = {
       ...context,
+      eventName: "pull_request",
+      ref: "refs/pull/42/merge",
       payload: {
         pull_request: {
           number: 42,
@@ -145,14 +138,13 @@ describe("payload", () => {
       },
     };
 
-    expect(
-      buildPayload(prContext, { baseBranch: "main", releaseBranch: "release/1.2.3" }, null)
-        .before_sha,
-    ).toBe("aaa111");
-    expect(
-      buildPayload(prContext, { baseBranch: "main", releaseBranch: "release/1.2.3" }, null)
-        .commits,
-    ).toEqual([{ message: "push on refs/heads/release/1.2.3", sha: "abc123" }]);
+    const payload = buildPayload(prContext, { productionBranch: "main" }, null);
+    expect(payload.before_sha).toBe("aaa111");
+    expect(payload.event_name).toBe("pull_request");
+    expect(payload.pull_request_number).toBe(42);
+    expect(payload.commits).toEqual([
+      { message: "pull_request on refs/pull/42/merge", sha: "abc123" },
+    ]);
   });
 });
 
@@ -160,7 +152,7 @@ describe("idempotency and request", () => {
   it("sends idempotency key in the payload and header", async () => {
     const payload = buildPayload(
       context,
-      { baseBranch: "main", releaseBranch: "release/1.2.3" },
+      { productionBranch: "main" },
       null,
     );
     const fetchImpl = vi.fn(async () => new Response("{}", { status: 202 }));
@@ -188,7 +180,7 @@ describe("idempotency and request", () => {
   it("fails on network errors without leaking the token", async () => {
     const payload = buildPayload(
       context,
-      { baseBranch: "main", releaseBranch: "release/1.2.3" },
+      { productionBranch: "main" },
       null,
     );
     const fetchImpl = vi.fn(async () => {
@@ -208,7 +200,7 @@ describe("idempotency and request", () => {
   it("fails on non-2xx responses", async () => {
     const payload = buildPayload(
       context,
-      { baseBranch: "main", releaseBranch: "release/1.2.3" },
+      { productionBranch: "main" },
       null,
     );
 
@@ -282,18 +274,16 @@ describe("config", () => {
     expect(
       readConfig(
         createCore({
-          "base-branch": "refs/heads/main",
-          "release-branch": "refs/heads/release/1.2.3",
+          "production-branch": "refs/heads/main",
           "duckpost-endpoint": "https://duckpost.test/api/ai-release-jobs",
           "include-diff-metadata": "false",
           "timeout-ms": "15000",
         }),
       ),
     ).toEqual({
-      baseBranch: "main",
       duckpostEndpoint: "https://duckpost.test/api/ai-release-jobs",
       includeDiffMetadata: false,
-      releaseBranch: "release/1.2.3",
+      productionBranch: "main",
       timeoutMs: 15000,
     });
   });
